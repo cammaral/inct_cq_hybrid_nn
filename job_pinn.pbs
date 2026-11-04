@@ -1,0 +1,36 @@
+#!/bin/bash
+#PBS -N inct_pinn
+#PBS -l select=1:ncpus=2:mem=12gb
+#PBS -l walltime=12:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "$PBS_O_WORKDIR"
+
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate mpc
+
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+
+SEEDS=(1924 1925 1926 1958 1997 2001 2002 2003 2004 2005)
+
+SEED=${SEEDS[$((PBS_ARRAY_INDEX / 2))]}
+
+if (( PBS_ARRAY_INDEX % 2 == 0 )); then
+    MODEL=${MODEL_A}
+else
+    MODEL=${MODEL_B}
+fi
+
+echo "Modelo: $MODEL"
+echo "Semente: $SEED"
+echo "Máquina: $(hostname)"
+
+python -u run.py \
+    --config config_10seeds.yaml \
+    --mode pinn \
+    --model "$MODEL" \
+    --seed "$SEED"

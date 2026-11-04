@@ -1,0 +1,52 @@
+#!/bin/bash
+#PBS -N pinn_lr
+#PBS -l select=1:ncpus=2:mem=12gb
+#PBS -l walltime=12:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "$PBS_O_WORKDIR"
+
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate mpc
+
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+
+SEEDS=(1924 1925 1926 1958 1997 2001 2002 2003 2004 2005)
+
+MODELS=(
+    mlp mac mlp_mac mac_frozen
+    mpc mlp_mpc mpc_frozen
+    mpc_classical mpc_classical_frozen
+    mpc_linear mlp_mpc_linear mpc_linear_frozen
+)
+
+INDEX=$PBS_ARRAY_INDEX
+SEED=${SEEDS[$((INDEX % 10))]}
+MODEL_INDEX=$((INDEX / 10))
+
+EXTRA=()
+
+if (( MODEL_INDEX < ${#MODELS[@]} )); then
+    MODEL=${MODELS[$MODEL_INDEX]}
+else
+    MODEL=mpc_product
+    K=$((MODEL_INDEX - 11))
+    EXTRA+=(--pauli-weight "$K")
+fi
+
+echo "Modelo: $MODEL"
+echo "Semente: $SEED"
+echo "Pauli: ${K:-original}"
+echo "Máquina: $(hostname)"
+
+python -u run.py \
+    --config config_pinn_lr_0p001.yaml \
+    --mode pinn \
+    --model "$MODEL" \
+    --seed "$SEED" \
+    --output-root results_ablations/lr_0p001 \
+    "${EXTRA[@]}"
