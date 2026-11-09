@@ -1,0 +1,54 @@
+#!/bin/bash
+#PBS -N mpc_classic
+#PBS -q workq
+#PBS -l select=1:ncpus=2:mem=8gb
+#PBS -l walltime=48:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "$PBS_O_WORKDIR"
+
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+export NUMEXPR_NUM_THREADS=2
+
+PYTHON="$HOME/miniforge3/envs/mpc/bin/python"
+ROOT="$PBS_O_WORKDIR/runs/pinn/mpc_classical_product"
+
+mkdir -p "$ROOT"
+
+echo "Iniciando job $PBS_JOBID em $(date)" >> "$ROOT/driver.log"
+
+set +e
+
+timeout --signal=TERM --kill-after=60s 46h \
+    "$PYTHON" -u pinn_mpc_classical_product.py \
+    --output "$ROOT" \
+    --epochs 15000 \
+    --lr 0.005 \
+    --points 1000 \
+    --ic 100 \
+    --bc 100 \
+    --val 300 \
+    --grid 250 \
+    >> "$ROOT/driver.log" 2>&1
+
+RC=$?
+set -e
+
+if [ "$RC" -eq 124 ] || [ "$RC" -eq 75 ]; then
+    echo "Tempo esgotado. Solicitando continuação..." \
+        >> "$ROOT/driver.log"
+
+    qsub "$PBS_O_WORKDIR/job_pinn_mpc_classical_product.pbs" \
+        >> "$ROOT/driver.log" 2>&1 || {
+        echo "Reenvie manualmente o PBS para continuar." \
+            >> "$ROOT/driver.log"
+        exit 1
+    }
+    exit 0
+fi
+
+exit "$RC"

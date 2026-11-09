@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOT="$1"
+shift
+
+PYTHON="$HOME/miniforge3/envs/mpc/bin/python"
+cd "$PBS_O_WORKDIR"
+
+for MODEL in "$@"; do
+    echo "Iniciando $MODEL em $(hostname)"
+
+    "$PYTHON" -u run.py \
+        --config "$ROOT/config_${MODEL}.yaml" \
+        --problem burgers \
+        > "$ROOT/${MODEL}.log" 2>&1
+
+    echo "Finalizado $MODEL"
+done

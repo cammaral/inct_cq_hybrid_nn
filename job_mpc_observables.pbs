@@ -1,0 +1,121 @@
+#!/bin/bash
+#PBS -N mpc_observables
+#PBS -q workq
+#PBS -l select=3:ncpus=2:mem=4gb
+#PBS -l place=scatter
+#PBS -l walltime=48:00:00
+#PBS -j oe
+
+set -euo pipefail
+cd "$PBS_O_WORKDIR"
+
+PYTHON="$HOME/miniforge3/envs/mpc/bin/python"
+ROOT="$PBS_O_WORKDIR/runs/mpc_observables_${PBS_JOBID%%.*}"
+
+mkdir -p "$ROOT"
+
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+
+"$PYTHON" - "$ROOT" <<'PY'
+import sys
+import copy
+import yaml
+from pathlib import Path
+
+root = Path(sys.argv[1])
+original = yaml.safe_load(Path("config.yaml").read_text())
+
+qubits = 5
+
+def correlator(pauli, i):
+    word = ["I"] * qubits
+    word[i] = pauli
+    word[(i + 1) % qubits] = pauli
+    return "".join(word)
+
+observables = {
+    "zz": [correlator("Z", i) for i in range(qubits)],
+    "xx": [correlator("X", i) for i in range(qubits)],
+    "yy": [correlator("Y", i) for i in range(qubits)],
+    "mixed": [
+        correlator(p, i)
+        for i, p in enumerate(["X", "Y", "Z", "X", "Y"])
+    ]
+}
+
+for tipo, words in observables.items():
+
+    name = f"mpc_obs_{tipo}"
+    cfg = copy.deepcopy(original)
+
+    cfg["models"] = [{
+        "name": name,
+        "kind": "mpc_hybrid",
+        "width": 32,
+        "depth": 3,
+        "activation": "tanh",
+        "qubits": 5,
+        "layers": 3,
+        "terms": 5,
+        "observables": words,
+        "quantum_trainable": True,
+        "powers": True,
+        "aggregation": "mean"
+    }]
+
+    cfg["training"] = {
+        "device": "cpu",
+        "epochs": 15000,
+        "batch_size": 1000,
+        "lr": 0.005,
+        "scheduler": "cosine",
+        "clip": None
+    }
+
+    cfg["data"] = {
+        "train": 1000,
+        "val": 300,
+        "test_grid": 250
+    }
+
+    cfg["seeds"] = [
+        1924, 1925, 1926, 1973, 2025,
+        2024, 2012, 1958, 1962, 1997
+    ]
+
+    cfg["output"] = str(root / "results")
+    cfg["ablations"] = []
+
+    (root / f"config_{name}.yaml").write_text(
+        yaml.safe_dump(cfg, sort_keys=False)
+    )
+PY
+
+echo "Job: $PBS_JOBID"
+sort -u "$PBS_NODEFILE"
+
+# No 1: ZZ e depois Misto
+pbsdsh -n 0 -- /bin/bash "$PBS_O_WORKDIR/worker_mpc_observables.sh" \
+    "$ROOT" mpc_obs_zz mpc_obs_mixed &
+P1=$!
+
+# No 2: XX
+pbsdsh -n 1 -- /bin/bash "$PBS_O_WORKDIR/worker_mpc_observables.sh" \
+    "$ROOT" mpc_obs_xx &
+P2=$!
+
+# No 3: YY
+pbsdsh -n 2 -- /bin/bash "$PBS_O_WORKDIR/worker_mpc_observables.sh" \
+    "$ROOT" mpc_obs_yy &
+P3=$!
+
+STATUS=0
+
+wait "$P1" || STATUS=1
+wait "$P2" || STATUS=1
+wait "$P3" || STATUS=1
+
+echo "Status final: $STATUS"
+exit "$STATUS"

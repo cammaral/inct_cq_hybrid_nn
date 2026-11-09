@@ -1,0 +1,79 @@
+#!/bin/bash
+#PBS -N pinn_mpc_serial
+#PBS -q workq
+#PBS -l select=1:ncpus=2:mem=8gb
+#PBS -l walltime=48:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "$PBS_O_WORKDIR"
+
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+export NUMEXPR_NUM_THREADS=2
+
+PYTHON="$HOME/miniforge3/envs/mpc/bin/python"
+
+ROOT="$PBS_O_WORKDIR/runs/pinn/mpc_serial"
+
+mkdir -p "$ROOT"
+
+printf '\n===== PBS_JOBID=%s; DATE=%s =====\n' \
+    "$PBS_JOBID" "$(date)" >> "$ROOT/driver.log"
+
+# Executar por até 46 horas, deixando margem para o PBS
+set +e
+
+timeout --signal=TERM --kill-after=60s 46h \
+    "$PYTHON" -u pinn_mpc_serial.py \
+    --output "$ROOT" \
+    --epochs 15000 \
+    --depth 4 \
+    --width 32 \
+    --lr 0.005 \
+    --points 1000 \
+    --ic 100 \
+    --bc 100 \
+    --val 300 \
+    --grid 250 \
+    --log-every 25 \
+    --checkpoint-every 250 \
+    --stage all \
+    >> "$ROOT/driver.log" 2>&1
+
+RC=$?
+
+set -e
+
+if [ "$RC" -eq 124 ]; then
+
+    echo "Limite de 46h atingido. Tentando continuar..." \
+        >> "$ROOT/driver.log"
+
+    qsub "$PBS_O_WORKDIR/job_pinn_mpc_serial.pbs" \
+        >> "$ROOT/driver.log" 2>&1 || {
+
+        echo "Reenvio automático não permitido." \
+            >> "$ROOT/driver.log"
+
+        echo "Execute novamente: qsub job_pinn_mpc_serial.pbs" \
+            >> "$ROOT/driver.log"
+
+        exit 1
+    }
+
+    exit 0
+fi
+
+if [ "$RC" -ne 0 ]; then
+
+    echo "Falha no treinamento: código $RC" \
+        >> "$ROOT/driver.log"
+
+    exit "$RC"
+fi
+
+echo "Treinamento concluído em $(date)" \
+    >> "$ROOT/driver.log"

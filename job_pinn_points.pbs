@@ -1,0 +1,45 @@
+#!/bin/bash
+#PBS -N pinn_points
+#PBS -q workq
+#PBS -l select=3:ncpus=2:mem=4gb
+#PBS -l place=scatter
+#PBS -l walltime=48:00:00
+#PBS -j oe
+
+set -euo pipefail
+cd "$PBS_O_WORKDIR"
+
+ROOT="$PBS_O_WORKDIR/runs/pinn/mlp_points_${PBS_JOBID%%.*}"
+mkdir -p "$ROOT"
+
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+
+STATUS=0
+
+# Nó 1
+pbsdsh -n 0 -- /bin/bash "$PBS_O_WORKDIR/worker_pinn_ablation.sh" "$ROOT" points 15000 0.005 cosine 1000 250 2000 &
+P0=$!
+
+# Nó 2
+pbsdsh -n 1 -- /bin/bash "$PBS_O_WORKDIR/worker_pinn_ablation.sh" "$ROOT" points 15000 0.005 cosine 1000 500 4000 &
+P1=$!
+
+# Nó 3
+pbsdsh -n 2 -- /bin/bash "$PBS_O_WORKDIR/worker_pinn_ablation.sh" "$ROOT" points 15000 0.005 cosine 1000 1000 &
+P2=$!
+
+wait "$P0" || STATUS=1
+wait "$P1" || STATUS=1
+wait "$P2" || STATUS=1
+
+COUNT=$(find "$ROOT" -name metrics.json | wc -l)
+echo "Treinamentos concluídos: $COUNT/50"
+
+if [ "$COUNT" -ne 50 ]; then
+    STATUS=1
+fi
+
+echo "Status final: $STATUS"
+exit "$STATUS"

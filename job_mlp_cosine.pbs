@@ -1,0 +1,68 @@
+#!/bin/bash
+#PBS -N mlp_cosine
+#PBS -q workq
+#PBS -l select=1:ncpus=2:mem=4gb
+#PBS -l walltime=48:00:00
+#PBS -j oe
+
+set -euo pipefail
+cd "$PBS_O_WORKDIR"
+
+PYTHON="$HOME/miniforge3/envs/mpc/bin/python"
+ROOT="$PBS_O_WORKDIR/runs/mlp_cosine_${PBS_JOBID%%.*}"
+
+mkdir -p "$ROOT"
+
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+
+"$PYTHON" - "$ROOT" <<'PY'
+import sys
+import copy
+import yaml
+from pathlib import Path
+
+root = Path(sys.argv[1])
+cfg = copy.deepcopy(yaml.safe_load(Path("config.yaml").read_text()))
+
+cfg["models"] = [{
+    "name": "mlp_cosine",
+    "kind": "mlp",
+    "width": 32,
+    "depth": 3,
+    "activation": "tanh"
+}]
+
+cfg["training"] = {
+    "device": "cpu",
+    "epochs": 15000,
+    "batch_size": 300,
+    "lr": 0.005,
+    "scheduler": "cosine",
+    "clip": None
+}
+
+cfg["data"] = {
+    "train": 300,
+    "val": 300,
+    "test_grid": 250
+}
+
+cfg["seeds"] = [
+    1924, 1925, 1926, 1973, 2025,
+    2024, 2012, 1958, 1962, 1997
+]
+
+cfg["output"] = str(root / "results")
+cfg["ablations"] = []
+
+(root / "config_cosine.yaml").write_text(
+    yaml.safe_dump(cfg, sort_keys=False)
+)
+PY
+
+"$PYTHON" -u run.py \
+    --config "$ROOT/config_cosine.yaml" \
+    --problem burgers \
+    > "$ROOT/cosine.log" 2>&1

@@ -1,0 +1,85 @@
+#!/bin/bash
+#PBS -N mlp_epochs_extra
+#PBS -q workq
+#PBS -l select=2:ncpus=2:mem=4gb
+#PBS -l place=scatter
+#PBS -l walltime=48:00:00
+#PBS -j oe
+
+set -euo pipefail
+cd "$PBS_O_WORKDIR"
+
+PYTHON="$HOME/miniforge3/envs/mpc/bin/python"
+ROOT="$PBS_O_WORKDIR/runs/mlp_epochs_extra_${PBS_JOBID%%.*}"
+
+mkdir -p "$ROOT"
+
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+
+"$PYTHON" - "$ROOT" <<'PY'
+import sys
+import copy
+import yaml
+from pathlib import Path
+
+root = Path(sys.argv[1])
+original = yaml.safe_load(Path("config.yaml").read_text())
+
+for epochs in [15000, 20000]:
+    name = f"mlp_epochs_{epochs}"
+    cfg = copy.deepcopy(original)
+
+    cfg["models"] = [{
+        "name": name,
+        "kind": "mlp",
+        "width": 32,
+        "depth": 3,
+        "activation": "tanh"
+    }]
+
+    cfg["training"] = {
+        "device": "cpu",
+        "epochs": epochs,
+        "batch_size": 300,
+        "lr": 0.001,
+        "scheduler": "none",
+        "clip": None
+    }
+
+    cfg["data"] = {
+        "train": 300,
+        "val": 300,
+        "test_grid": 250
+    }
+
+    cfg["seeds"] = [
+        1924, 1925, 1926, 1973, 2025,
+        2024, 2012, 1958, 1962, 1997
+    ]
+
+    cfg["output"] = str(root / "results")
+    cfg["ablations"] = []
+
+    (root / f"config_{name}.yaml").write_text(
+        yaml.safe_dump(cfg, sort_keys=False)
+    )
+PY
+
+pbsdsh -n 0 -- "$PYTHON" -u "$PBS_O_WORKDIR/run.py" \
+    --config "$ROOT/config_mlp_epochs_15000.yaml" \
+    --problem burgers > "$ROOT/epochs_15000.log" 2>&1 &
+P1=$!
+
+pbsdsh -n 1 -- "$PYTHON" -u "$PBS_O_WORKDIR/run.py" \
+    --config "$ROOT/config_mlp_epochs_20000.yaml" \
+    --problem burgers > "$ROOT/epochs_20000.log" 2>&1 &
+P2=$!
+
+STATUS=0
+wait "$P1" || STATUS=1
+wait "$P2" || STATUS=1
+
+echo "Status final: $STATUS"
+exit "$STATUS"

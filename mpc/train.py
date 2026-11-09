@@ -1,3 +1,4 @@
+import csv
 """Treinamento supervisionado comum aos quatro modelos; logs por epoca."""
 import copy
 import csv
@@ -105,7 +106,13 @@ def train_one(cfg, problem, variant, seed, folder):
 
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    history = []
+    history_path = folder / "history.csv"
+    history_file = history_path.open("w", newline="", buffering=1)
+    history_writer = csv.writer(history_file)
+    history_writer.writerow([
+        "epoch", "train_mse", "val_mse",
+        "grad_all", "grad_aux", "grad_classical", "grad_quantum", "lr"
+    ])
     auxiliary = []
     best_loss, best_epoch, best_weights = float("inf"), None, None
     is_mpc = variant["kind"].startswith("mpc_")
@@ -118,15 +125,19 @@ def train_one(cfg, problem, variant, seed, folder):
     for epoch in range(1, epochs + 1):
         net.train()
         indices = torch.randperm(len(x), device=device)
-        loss_sum = grad_sum = aux_grad_sum = 0.0
+        loss_sum = grad_sum = aux_grad_sum = classical_grad_sum = quantum_grad_sum = 0.0
         steps = 0
         for ix in indices.split(batch):
             optimizer.zero_grad(set_to_none=True)
             loss = (net(x[ix]) - target[ix]).square().mean()  # SEM residuo PDE
             loss.backward()
             grad_sum += grad_norm(net.parameters())
+            if hasattr(net, "main"):
+                classical_grad_sum += grad_norm(net.main.parameters())
             if is_mpc:
                 aux_grad_sum += grad_norm(net.aux.parameters())
+                if variant["kind"] == "mpc_hybrid":
+                    quantum_grad_sum += grad_norm(net.aux.parameters())
             if settings.get("clip") is not None:
                 torch.nn.utils.clip_grad_norm_(net.parameters(), float(settings["clip"]))
             optimizer.step()
@@ -143,9 +154,12 @@ def train_one(cfg, problem, variant, seed, folder):
                 powered = z.pow(net.exponents.cpu()) if net.powers else z
                 effective = powered / net.terms if net.aggregation == "mean" else powered
                 auxiliary.append([epoch] + z.tolist() + powered.tolist() + effective.tolist())
-        history.append([epoch, loss_sum / len(x), val_mse,
-                        grad_sum / steps, aux_grad_sum / steps,
-                        optimizer.param_groups[0]["lr"]])
+        history_writer.writerow([
+            epoch, loss_sum / len(x), val_mse,
+            grad_sum / steps, aux_grad_sum / steps,
+            classical_grad_sum / steps, quantum_grad_sum / steps,
+            optimizer.param_groups[0]["lr"]
+        ])
         if val_mse < best_loss:
             best_loss, best_epoch = val_mse, epoch
             best_weights = copy.deepcopy(net.state_dict())
@@ -157,6 +171,8 @@ def train_one(cfg, problem, variant, seed, folder):
 
     with torch.no_grad():
         final = net.coefficients().cpu().tolist() if is_mpc else None
+    history_file.close()
+    torch.save(net.state_dict(), folder / "final.pt")
     net.load_state_dict(best_weights)  # modelo selecionado pelo conjunto de validacao
     net.eval()
     with torch.no_grad():
@@ -185,8 +201,11 @@ def train_one(cfg, problem, variant, seed, folder):
                    "initial_coefficients": initial,
                    "best_coefficients": best_coeff,
                    "final_coefficients": final}, f, indent=2)
-    csv_file(folder / "history.csv",
-             ["epoch", "train_mse", "val_mse", "grad_all", "grad_aux", "lr"], history)
+    with history_path.open(newline="") as f:
+        history = [
+            [float(v) for v in row]
+            for row in list(csv.reader(f))[1:]
+        ]
     plot_history(folder / "loss.png", history)
     if is_mpc:
         tag = "exp_" if variant["kind"] == "mpc_hybrid" else "z_"

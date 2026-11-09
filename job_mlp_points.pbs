@@ -1,0 +1,100 @@
+#!/bin/bash
+#PBS -N mlp_points
+#PBS -q workq
+#PBS -l select=4:ncpus=2:mem=4gb
+#PBS -l place=scatter
+#PBS -l walltime=48:00:00
+#PBS -j oe
+
+set -euo pipefail
+cd "$PBS_O_WORKDIR"
+
+PYTHON="$HOME/miniforge3/envs/mpc/bin/python"
+ROOT="$PBS_O_WORKDIR/runs/mlp_points_${PBS_JOBID%%.*}"
+
+mkdir -p "$ROOT"
+
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+
+"$PYTHON" - "$ROOT" <<'PY'
+import sys
+import copy
+import yaml
+from pathlib import Path
+
+root = Path(sys.argv[1])
+original = yaml.safe_load(Path("config.yaml").read_text())
+
+for points in [100, 500, 1000, 2000]:
+    name = f"mlp_points_{points}"
+    cfg = copy.deepcopy(original)
+
+    cfg["models"] = [{
+        "name": name,
+        "kind": "mlp",
+        "width": 32,
+        "depth": 3,
+        "activation": "tanh"
+    }]
+
+    cfg["training"] = {
+        "device": "cpu",
+        "epochs": 15000,
+        "batch_size": points,
+        "lr": 0.005,
+        "scheduler": "cosine",
+        "clip": None
+    }
+
+    cfg["data"] = {
+        "train": points,
+        "val": 300,
+        "test_grid": 250
+    }
+
+    cfg["seeds"] = [
+        1924, 1925, 1926, 1973, 2025,
+        2024, 2012, 1958, 1962, 1997
+    ]
+
+    cfg["output"] = str(root / "results")
+    cfg["ablations"] = []
+
+    (root / f"config_{name}.yaml").write_text(
+        yaml.safe_dump(cfg, sort_keys=False)
+    )
+PY
+
+echo "Job: $PBS_JOBID"
+sort -u "$PBS_NODEFILE"
+
+pbsdsh -n 0 -- "$PYTHON" -u "$PBS_O_WORKDIR/run.py" \
+    --config "$ROOT/config_mlp_points_100.yaml" \
+    --problem burgers > "$ROOT/points_100.log" 2>&1 &
+P1=$!
+
+pbsdsh -n 1 -- "$PYTHON" -u "$PBS_O_WORKDIR/run.py" \
+    --config "$ROOT/config_mlp_points_500.yaml" \
+    --problem burgers > "$ROOT/points_500.log" 2>&1 &
+P2=$!
+
+pbsdsh -n 2 -- "$PYTHON" -u "$PBS_O_WORKDIR/run.py" \
+    --config "$ROOT/config_mlp_points_1000.yaml" \
+    --problem burgers > "$ROOT/points_1000.log" 2>&1 &
+P3=$!
+
+pbsdsh -n 3 -- "$PYTHON" -u "$PBS_O_WORKDIR/run.py" \
+    --config "$ROOT/config_mlp_points_2000.yaml" \
+    --problem burgers > "$ROOT/points_2000.log" 2>&1 &
+P4=$!
+
+STATUS=0
+wait "$P1" || STATUS=1
+wait "$P2" || STATUS=1
+wait "$P3" || STATUS=1
+wait "$P4" || STATUS=1
+
+echo "Status final: $STATUS"
+exit "$STATUS"

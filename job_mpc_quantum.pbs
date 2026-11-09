@@ -1,0 +1,106 @@
+#!/bin/bash
+#PBS -N mpc_quantum
+#PBS -q workq
+#PBS -l select=3:ncpus=2:mem=4gb
+#PBS -l place=scatter
+#PBS -l walltime=48:00:00
+#PBS -j oe
+
+set -euo pipefail
+cd "$PBS_O_WORKDIR"
+
+PYTHON="$HOME/miniforge3/envs/mpc/bin/python"
+ROOT="$PBS_O_WORKDIR/runs/mpc_quantum_${PBS_JOBID%%.*}"
+
+mkdir -p "$ROOT"
+
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+
+"$PYTHON" - "$ROOT" <<'PY'
+import sys
+import copy
+import yaml
+from pathlib import Path
+
+root = Path(sys.argv[1])
+original = yaml.safe_load(Path("config.yaml").read_text())
+
+for qubits in [3, 5, 7]:
+    for layers in [1, 3, 5]:
+
+        name = f"mpc_q{qubits}_l{layers}"
+        cfg = copy.deepcopy(original)
+
+        observables = [
+            "I" * i + "Z" + "I" * (qubits - i - 1)
+            for i in range(qubits)
+        ]
+
+        cfg["models"] = [{
+            "name": name,
+            "kind": "mpc_hybrid",
+            "width": 32,
+            "depth": 3,
+            "activation": "tanh",
+            "qubits": qubits,
+            "layers": layers,
+            "terms": qubits,
+            "observables": observables,
+            "quantum_trainable": True,
+            "powers": True,
+            "aggregation": "mean"
+        }]
+
+        cfg["training"] = {
+            "device": "cpu",
+            "epochs": 15000,
+            "batch_size": 1000,
+            "lr": 0.005,
+            "scheduler": "cosine",
+            "clip": None
+        }
+
+        cfg["data"] = {
+            "train": 1000,
+            "val": 300,
+            "test_grid": 250
+        }
+
+        cfg["seeds"] = [
+            1924, 1925, 1926, 1973, 2025,
+            2024, 2012, 1958, 1962, 1997
+        ]
+
+        cfg["output"] = str(root / "results")
+        cfg["ablations"] = []
+
+        (root / f"config_{name}.yaml").write_text(
+            yaml.safe_dump(cfg, sort_keys=False)
+        )
+PY
+
+echo "Job: $PBS_JOBID"
+sort -u "$PBS_NODEFILE"
+
+pbsdsh -n 0 -- /bin/bash "$PBS_O_WORKDIR/worker_mpc_quantum.sh" \
+    "$ROOT" 3 &
+P1=$!
+
+pbsdsh -n 1 -- /bin/bash "$PBS_O_WORKDIR/worker_mpc_quantum.sh" \
+    "$ROOT" 5 &
+P2=$!
+
+pbsdsh -n 2 -- /bin/bash "$PBS_O_WORKDIR/worker_mpc_quantum.sh" \
+    "$ROOT" 7 &
+P3=$!
+
+STATUS=0
+
+wait "$P1" || STATUS=1
+wait "$P2" || STATUS=1
+wait "$P3" || STATUS=1
+
+echo "Status final: $STATUS"
+exit "$STATUS"
