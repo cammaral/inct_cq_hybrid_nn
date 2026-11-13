@@ -1,0 +1,92 @@
+#!/bin/bash
+#PBS -N mpc_z_grid
+#PBS -q workq
+#PBS -l select=3:ncpus=2:mem=12gb
+#PBS -l place=scatter
+#PBS -l walltime=48:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "$PBS_O_WORKDIR"
+
+OUT="$PBS_O_WORKDIR/runs/pinn/mpc_z_grid_5_10_15"
+JOB="${PBS_JOBID%%.*}"
+
+mkdir -p "$OUT"
+
+echo "PBS JOB: $PBS_JOBID"
+echo "Inicio: $(date)"
+
+# Obter o primeiro indice de cada host distinto.
+mapfile -t NODES < <(
+    awk '!seen[$0]++ {print NR-1}' "$PBS_NODEFILE"
+)
+
+if [ "${#NODES[@]}" -ne 3 ]; then
+    echo "ERRO: eram esperados 3 nos distintos."
+    exit 1
+fi
+
+echo "Hosts alocados:"
+sort -u "$PBS_NODEFILE"
+
+QUBITS=(5 10 15)
+PIDS=()
+
+for i in 0 1 2; do
+    Q="${QUBITS[$i]}"
+    N="${NODES[$i]}"
+
+    echo "Iniciando ${Q} qubits no indice ${N}"
+
+    pbsdsh -n "$N" -- /bin/bash \
+        "$PBS_O_WORKDIR/worker_pinn_mpc_z_grid.sh" \
+        "$Q" &
+
+    PIDS+=("$!")
+done
+
+# Aguardar os tres workers.
+set +e
+for PID in "${PIDS[@]}"; do
+    wait "$PID"
+done
+set -e
+
+FAILED=0
+INCOMPLETE=0
+
+for Q in "${QUBITS[@]}"; do
+
+    STATUS_FILE="$OUT/q${Q}_${JOB}.status"
+
+    if [ ! -f "$STATUS_FILE" ]; then
+        echo "ERRO: worker q${Q} nao registrou status."
+        FAILED=1
+        continue
+    fi
+
+    STATUS=$(cat "$STATUS_FILE")
+    echo "q${Q}: status ${STATUS}"
+
+    if [ "$STATUS" = "124" ]; then
+        INCOMPLETE=1
+    elif [ "$STATUS" != "0" ]; then
+        FAILED=1
+    fi
+done
+
+if [ "$FAILED" -ne 0 ]; then
+    echo "ERRO: um ou mais workers falharam."
+    exit 1
+fi
+
+if [ "$INCOMPLETE" -ne 0 ]; then
+    echo "Treinamento interrompido pelo limite preventivo."
+    echo "Checkpoints preservados para retomada."
+    exit 124
+fi
+
+echo "Todos os workers finalizaram."
+echo "Fim: $(date)"

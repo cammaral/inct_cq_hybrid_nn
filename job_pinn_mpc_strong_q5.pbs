@@ -1,0 +1,83 @@
+#!/bin/bash
+#PBS -N mpc_strong5
+#PBS -q workq
+#PBS -l select=1:ncpus=2:mem=8gb
+#PBS -l walltime=48:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "$PBS_O_WORKDIR"
+
+PYTHON="$HOME/miniforge3/envs/mpc/bin/python"
+
+OLD="$PBS_O_WORKDIR/runs/pinn/mpc_z_grid_5_10_15"
+NEW="$PBS_O_WORKDIR/runs/pinn/mpc_strongly_entangling"
+
+mkdir -p "$NEW"
+
+# Confirmar que o worker de 5 qubits do job 2976
+# terminou com sucesso.
+STATUS_FILE="$OLD/q5_2976.status"
+
+if [ ! -f "$STATUS_FILE" ]; then
+    echo "ERRO: nao existe confirmacao de fim do q5."
+    exit 1
+fi
+
+if [ "$(cat "$STATUS_FILE")" != "0" ]; then
+    echo "ERRO: treinamento anterior q5 nao terminou corretamente."
+    exit 1
+fi
+
+# Conferir as tres sementes do experimento anterior.
+for SEED in 1924 1925 1926; do
+
+    METRICS="$OLD/z_grid_large/q5_l10_z_polynomial/seed_${SEED}/metrics.json"
+
+    if [ ! -s "$METRICS" ]; then
+        echo "ERRO: resultado q5_l10 seed ${SEED} ausente."
+        exit 1
+    fi
+
+done
+
+echo "Treinamento q5 anterior confirmado."
+echo "Iniciando StronglyEntanglingLayers."
+echo "Host: $(hostname)"
+echo "Inicio: $(date)"
+
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+export NUMEXPR_NUM_THREADS=2
+
+LOG="$NEW/strong_${PBS_JOBID%%.*}.log"
+
+set +e
+
+timeout --signal=TERM --kill-after=60s 46h \
+    "$PYTHON" -u pinn_mpc_strong_q5_l3.py \
+    --output "$NEW" \
+    --seeds 1924 1925 1926 1973 2025 2024 2012 1958 1962 1997 \
+    --epochs 15000 \
+    --depth 4 \
+    --width 32 \
+    --lr 0.005 \
+    --points 1000 \
+    --ic 100 \
+    --bc 100 \
+    --val 300 \
+    --grid 250 \
+    --log-every 25 \
+    --checkpoint-every 250 \
+    >> "$LOG" 2>&1
+
+STATUS=$?
+
+set -e
+
+echo "Fim: $(date) | Status: $STATUS"
+echo "Log: $LOG"
+
+exit "$STATUS"
